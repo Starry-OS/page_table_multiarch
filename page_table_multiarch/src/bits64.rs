@@ -72,8 +72,6 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
             return Err(PagingError::AlreadyMapped);
         }
         *entry = GenericPTE::new_page(target.align_down(page_size), flags, page_size.is_huge());
-        // FIXME: better way to handle LA TLB
-        #[cfg(target_arch = "loongarch64")]
         M::flush_tlb(Some(vaddr));
         Ok(())
     }
