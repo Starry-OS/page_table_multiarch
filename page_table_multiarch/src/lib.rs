@@ -18,6 +18,14 @@ pub use self::bits64::PageTable64;
 #[doc(no_inline)]
 pub use page_table_entry::{GenericPTE, MappingFlags};
 
+pub trait PageTableModifyExt {
+    type Modify<'a>
+    where
+        Self: 'a;
+
+    fn modify(&mut self) -> Self::Modify<'_>;
+}
+
 /// The error type for page table operation failures.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PagingError {
