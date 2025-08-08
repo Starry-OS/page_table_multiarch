@@ -1,11 +1,11 @@
-use crate::{GenericPTE, PageTableModifyExt, PagingHandler, PagingMetaData};
-use crate::{MappingFlags, PageSize, PagingError, PagingResult};
+use core::{marker::PhantomData, ops::Deref};
+
 use arrayvec::ArrayVec;
-use core::marker::PhantomData;
-use core::ops::Deref;
 use memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr};
 
-const SMALL_FLUSH_THRESHOLD: usize = 4;
+use crate::{
+    GenericPTE, MappingFlags, PageSize, PagingError, PagingHandler, PagingMetaData, PagingResult,
+};
 
 const ENTRY_COUNT: usize = 512;
 
@@ -69,6 +69,10 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64<M, PTE, H
         }
         let off = size.align_offset(vaddr.into());
         Ok((entry.paddr().add(off), entry.flags(), size))
+    }
+
+    pub fn to_mut(&mut self) -> PageTable64Mut<'_, M, PTE, H> {
+        PageTable64Mut::new(self)
     }
 }
 
@@ -156,58 +160,57 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64<
     }
 }
 
-impl<M: PagingMetaData + 'static, PTE: GenericPTE + 'static, H: PagingHandler + 'static>
-    PageTableModifyExt for PageTable64<M, PTE, H>
-{
-    type Modify<'a> = PageTable64Modify<'a, M, PTE, H>;
+const SMALL_FLUSH_THRESHOLD: usize = 4;
 
-    fn modify(&mut self) -> Self::Modify<'_> {
-        PageTable64Modify(self, ToBeFlushed::None)
-    }
-}
-
-enum ToBeFlushed<M: PagingMetaData> {
+enum ToFlush<M: PagingMetaData> {
     None,
     Addresses(ArrayVec<M::VirtAddr, SMALL_FLUSH_THRESHOLD>),
     Full,
 }
 
-pub struct PageTable64Modify<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler>(
-    &'a mut PageTable64<M, PTE, H>,
-    ToBeFlushed<M>,
-);
-impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Deref
-    for PageTable64Modify<'_, M, PTE, H>
-{
+pub struct PageTable64Mut<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> {
+    inner: &'a mut PageTable64<M, PTE, H>,
+    flush: ToFlush<M>,
+}
+
+impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Deref for PageTable64Mut<'_, M, PTE, H> {
     type Target = PageTable64<M, PTE, H>;
+
     fn deref(&self) -> &Self::Target {
-        self.0
+        self.inner
     }
 }
 
-impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_, M, PTE, H> {
-    fn add_flush(&mut self, vaddr: M::VirtAddr) {
-        match &mut self.1 {
-            ToBeFlushed::None => {
-                let mut addresses = ArrayVec::new();
-                addresses.push(vaddr);
-                self.1 = ToBeFlushed::Addresses(addresses);
-            }
-            ToBeFlushed::Addresses(addrs) => {
-                if addrs.try_push(vaddr).is_err() {
-                    self.1 = ToBeFlushed::Full;
-                }
-            }
-            ToBeFlushed::Full => {}
+impl<'a, M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Mut<'a, M, PTE, H> {
+    fn new(inner: &'a mut PageTable64<M, PTE, H>) -> Self {
+        Self {
+            inner,
+            flush: ToFlush::None,
         }
     }
 
-    fn table_of_mut<'a>(&mut self, paddr: PhysAddr) -> &'a mut [PTE] {
+    fn flush(&mut self, vaddr: M::VirtAddr) {
+        match self.flush {
+            ToFlush::None => {
+                let mut addresses = ArrayVec::new();
+                addresses.push(vaddr);
+                self.flush = ToFlush::Addresses(addresses);
+            }
+            ToFlush::Addresses(ref mut addrs) => {
+                if addrs.try_push(vaddr).is_err() {
+                    self.flush = ToFlush::Full;
+                }
+            }
+            ToFlush::Full => {}
+        }
+    }
+
+    fn table_of_mut(&mut self, paddr: PhysAddr) -> &'a mut [PTE] {
         let ptr = H::phys_to_virt(paddr).as_mut_ptr() as _;
         unsafe { core::slice::from_raw_parts_mut(ptr, ENTRY_COUNT) }
     }
 
-    fn next_table_mut<'a>(&mut self, entry: &PTE) -> PagingResult<&'a mut [PTE]> {
+    fn next_table_mut(&mut self, entry: &PTE) -> PagingResult<&'a mut [PTE]> {
         if entry.paddr().as_usize() == 0 {
             Err(PagingError::NotMapped)
         } else if entry.is_huge() {
@@ -217,7 +220,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
         }
     }
 
-    fn next_table_mut_or_create<'a>(&mut self, entry: &mut PTE) -> PagingResult<&'a mut [PTE]> {
+    fn next_table_mut_or_create(&mut self, entry: &mut PTE) -> PagingResult<&'a mut [PTE]> {
         if entry.is_unused() {
             let paddr = PageTable64::<M, PTE, H>::alloc_table()?;
             *entry = GenericPTE::new_table(paddr);
@@ -306,7 +309,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
             return Err(PagingError::AlreadyMapped);
         }
         *entry = GenericPTE::new_page(target.align_down(page_size), flags, page_size.is_huge());
-        self.add_flush(vaddr);
+        self.flush(vaddr);
         Ok(())
     }
 
@@ -326,7 +329,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
         let (entry, size) = self.get_entry_mut(vaddr)?;
         entry.set_paddr(paddr);
         entry.set_flags(flags, size.is_huge());
-        self.add_flush(vaddr);
+        self.flush(vaddr);
         Ok(size)
     }
 
@@ -342,7 +345,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
             return Err(PagingError::NotMapped);
         }
         entry.set_flags(flags, size.is_huge());
-        self.add_flush(vaddr);
+        self.flush(vaddr);
         Ok(size)
     }
 
@@ -362,7 +365,7 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
         let paddr = entry.paddr();
         let flags = entry.flags();
         entry.clear();
-        self.add_flush(vaddr);
+        self.flush(vaddr);
         Ok((paddr, flags, size))
     }
 
@@ -371,7 +374,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
     ///
     /// The virtual and physical memory regions start with `vaddr` and `paddr`
     /// respectively. The region size is `size`. The addresses and `size` must
-    /// be aligned to 4K, otherwise it will return [`Err(PagingError::NotAligned)`].
+    /// be aligned to 4K, otherwise it will return
+    /// [`Err(PagingError::NotAligned)`].
     ///
     /// When `allow_huge` is true, it will try to map the region with huge pages
     /// if possible. Otherwise, it will map the region with 4K pages.
@@ -430,7 +434,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
     /// Unmaps a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
-    /// unexpected behaviors may occur. It can deal with huge pages automatically.
+    /// unexpected behaviors may occur. It can deal with huge pages
+    /// automatically.
     pub fn unmap_region(&mut self, vaddr: M::VirtAddr, size: usize) -> PagingResult {
         let mut vaddr_usize: usize = vaddr.into();
         let mut size = size;
@@ -457,7 +462,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
     /// Updates mapping flags of a contiguous virtual memory region.
     ///
     /// The region must be mapped before using [`PageTable64::map_region`], or
-    /// unexpected behaviors may occur. It can deal with huge pages automatically.
+    /// unexpected behaviors may occur. It can deal with huge pages
+    /// automatically.
     pub fn protect_region(
         &mut self,
         vaddr: M::VirtAddr,
@@ -495,7 +501,8 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
         Ok(())
     }
 
-    /// Copy entries from another page table within the given virtual memory range.
+    /// Copy entries from another page table within the given virtual memory
+    /// range.
     #[cfg(feature = "copy-from")]
     pub fn copy_from(&mut self, other: &PageTable64<M, PTE, H>, start: M::VirtAddr, size: usize) {
         if size == 0 {
@@ -516,28 +523,33 @@ impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> PageTable64Modify<'_,
         assert!(end_idx <= ENTRY_COUNT);
         for i in start_idx..end_idx {
             let entry = &mut dst_table[i];
-            if !self.0.borrowed_entries.set(i, true) && self.next_table(entry).is_ok() {
+            if !self.inner.borrowed_entries.set(i, true) && self.next_table(entry).is_ok() {
                 self.dealloc_tree(entry.paddr(), 1);
             }
             *entry = src_table[i];
         }
     }
-}
 
-impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop
-    for PageTable64Modify<'_, M, PTE, H>
-{
-    fn drop(&mut self) {
-        match &self.1 {
-            ToBeFlushed::None => {}
-            ToBeFlushed::Addresses(addrs) => {
+    /// Commits the changes made to the page table, flushing the TLB as
+    /// necessary.
+    pub fn commit(&mut self) {
+        match &self.flush {
+            ToFlush::None => {}
+            ToFlush::Addresses(addrs) => {
                 for vaddr in addrs.iter() {
                     M::flush_tlb(Some(*vaddr));
                 }
             }
-            ToBeFlushed::Full => {
+            ToFlush::Full => {
                 M::flush_tlb(None);
             }
         }
+        self.flush = ToFlush::None;
+    }
+}
+
+impl<M: PagingMetaData, PTE: GenericPTE, H: PagingHandler> Drop for PageTable64Mut<'_, M, PTE, H> {
+    fn drop(&mut self) {
+        self.commit();
     }
 }
