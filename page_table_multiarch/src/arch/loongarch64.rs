@@ -22,10 +22,10 @@ impl LA64MetaData {
     /// | 9:5      | PTWidth   |     9 |
     /// | 14:10    | Dir1Base  |    21 |
     /// | 19:15    | Dir1Width |     9 |
-    /// | 24:20    | Dir2Base  |    30 |
-    /// | 29:25    | Dir2Width |     9 |
+    /// | 24:20    | Dir2Base  |     0 |
+    /// | 29:25    | Dir2Width |     0 |
     /// | 31:30    | PTEWidth  |     0 |
-    pub const PWCL_VALUE: u32 = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 25);
+    pub const PWCL_VALUE: u32 = 12 | (9 << 5) | (21 << 10) | (9 << 15);
 
     /// PWCH(Page Walk Controller for Higher Half Address Space) CSR flags
     ///
@@ -33,20 +33,20 @@ impl LA64MetaData {
     ///
     /// | BitRange | Name                            | Value |
     /// | ----     | ----                            | ----  |
-    /// | 5:0      | Dir3Base                        |    39 |
+    /// | 5:0      | Dir3Base                        |    30 |
     /// | 11:6     | Dir3Width                       |     9 |
     /// | 17:12    | Dir4Base                        |     0 |
     /// | 23:18    | Dir4Width                       |     0 |
     /// | 24       | 0                               |     0 |
     /// | 24       | HPTW_En(CPUCFG.2.HPTW(bit24)=1) |     0 |
     /// | 31:25    | 0                               |     0 |
-    pub const PWCH_VALUE: u32 = 39 | (9 << 6);
+    pub const PWCH_VALUE: u32 = 30 | (9 << 6);
 }
 
 impl PagingMetaData for LA64MetaData {
-    const LEVELS: usize = 4;
-    const PA_MAX_BITS: usize = 48;
-    const VA_MAX_BITS: usize = 48;
+    const LEVELS: usize = 3;
+    const PA_MAX_BITS: usize = 40;
+    const VA_MAX_BITS: usize = 40;
     type VirtAddr = VirtAddr;
 
     #[inline]
@@ -82,8 +82,8 @@ impl PagingMetaData for LA64MetaData {
 ///
 /// <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#section-multi-level-page-table-structure-supported-by-page-walking>
 ///
-/// 4 levels:
+/// 3 levels:
 ///
-/// using page table dir3, dir2, dir1 and pt, ignore dir4
+/// using page table dir3, dir1 and pt, ignore dir4 and dir2
 pub type LA64PageTable<H> = PageTable64<LA64MetaData, LA64PTE, H>;
 pub type LA64PageTableMut<'a, H> = PageTable64Mut<'a, LA64MetaData, LA64PTE, H>;
