@@ -38,4 +38,4 @@ impl PagingMetaData for A64PagingMetaData {
 
 /// AArch64 VMSAv8-64 translation table.
 pub type A64PageTable<H> = PageTable64<A64PagingMetaData, A64PTE, H>;
-pub type A64PageTableMut<H> = PageTable64Mut<'_, A64PagingMetaData, A64PTE, H>;
+pub type A64PageTableMut<'a, H> = PageTable64Mut<'a, A64PagingMetaData, A64PTE, H>;
