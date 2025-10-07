@@ -10,6 +10,7 @@ mod bits64;
 
 use core::fmt::Debug;
 
+use axerrno::AxError;
 use memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
 #[doc(no_inline)]
 pub use page_table_entry::{GenericPTE, MappingFlags};
@@ -33,6 +34,17 @@ pub enum PagingError {
     /// The page table entry represents a huge page, but the target physical
     /// frame is 4K in size.
     MappedToHugePage,
+}
+
+impl From<PagingError> for AxError {
+    fn from(value: PagingError) -> Self {
+        match value {
+            PagingError::NoMemory => AxError::NoMemory,
+            PagingError::NotMapped => AxError::NotFound,
+            PagingError::AlreadyMapped => AxError::AlreadyExists,
+            _ => AxError::InvalidInput,
+        }
+    }
 }
 
 /// The specialized `Result` type for page table operations.
